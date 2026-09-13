@@ -1,0 +1,1464 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>Aurora — Local WebGPU Intelligence</title>
+<meta name="description" content="A fully client-side AI assistant running Qwen2.5-1.5B-Instruct on WebGPU, with optional live web search grounding. No API keys, no servers.">
+
+<style>
+  :root{
+    --emerald: #10e0a3;
+    --purple: #7c3aed;
+    --cyan: #22d3ee;
+    --bg-0: #05060a;
+    --panel: rgba(16, 18, 28, 0.55);
+    --panel-border: rgba(255,255,255,0.08);
+    --text-hi: #eef2f7;
+    --text-lo: #9aa4b2;
+    --danger: #ff5d7a;
+    --radius-lg: 20px;
+    --radius-md: 14px;
+    --radius-sm: 9px;
+    --font-display: 'Fraunces', 'Iowan Old Style', Georgia, serif;
+    --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-mono: 'JetBrains Mono', 'SFMono-Regular', Menlo, monospace;
+  }
+
+  @font-face{
+    font-family: 'Fraunces';
+    src: local('Georgia');
+  }
+
+  *{ box-sizing: border-box; }
+  html, body{ height: 100%; }
+
+  body{
+    margin: 0;
+    font-family: var(--font-body);
+    color: var(--text-hi);
+    background: var(--bg-0);
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  @media (prefers-reduced-motion: reduce){
+    *{ animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
+  }
+
+  /* ---------- Aurora background ---------- */
+  .aurora-stage{
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    overflow: hidden;
+    background: var(--bg-0);
+  }
+  .aurora-stage::before{
+    content: "";
+    position: absolute;
+    inset: -20%;
+    background:
+      radial-gradient(ellipse at 20% 20%, rgba(16, 224, 163, 0.35), transparent 55%),
+      radial-gradient(ellipse at 80% 30%, rgba(124, 58, 237, 0.38), transparent 50%),
+      radial-gradient(ellipse at 50% 80%, rgba(34, 211, 238, 0.30), transparent 55%),
+      radial-gradient(ellipse at 10% 70%, rgba(124, 58, 237, 0.25), transparent 50%);
+    filter: blur(60px) saturate(130%);
+    animation: aurora-drift 22s ease-in-out infinite alternate;
+  }
+  .aurora-stage::after{
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image: radial-gradient(rgba(255,255,255,0.035) 1px, transparent 1px);
+    background-size: 3px 3px;
+    opacity: 0.5;
+    mix-blend-mode: overlay;
+  }
+  @keyframes aurora-drift{
+    0%   { transform: translate3d(-4%, -2%, 0) rotate(0deg) scale(1); }
+    33%  { transform: translate3d(3%, 4%, 0) rotate(6deg) scale(1.08); }
+    66%  { transform: translate3d(-2%, 3%, 0) rotate(-5deg) scale(1.04); }
+    100% { transform: translate3d(4%, -3%, 0) rotate(4deg) scale(1.1); }
+  }
+  .noise-vignette{
+    position: fixed; inset: 0; z-index: 1; pointer-events: none;
+    background: radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.55) 100%);
+  }
+
+  /* ---------- App shell ---------- */
+  .app-shell{
+    position: relative;
+    z-index: 2;
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    height: 100dvh;
+    width: 100%;
+    transition: grid-template-columns 0.35s cubic-bezier(.65,0,.35,1);
+  }
+  .app-shell.sidebar-collapsed{ grid-template-columns: 0px 1fr; }
+
+  /* ---------- Sidebar ---------- */
+  .sidebar{
+    overflow: hidden;
+    background: rgba(9, 10, 16, 0.55);
+    backdrop-filter: blur(22px) saturate(140%);
+    -webkit-backdrop-filter: blur(22px) saturate(140%);
+    border-right: 1px solid var(--panel-border);
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .sidebar-inner{
+    width: 280px;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    padding: 18px 14px;
+  }
+  .brand{
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 8px 18px 8px;
+  }
+  .brand-mark{
+    width: 30px; height: 30px; border-radius: 9px;
+    background: conic-gradient(from 120deg, var(--emerald), var(--cyan), var(--purple), var(--emerald));
+    box-shadow: 0 0 18px rgba(34, 211, 238, 0.45);
+    flex-shrink: 0;
+  }
+  .brand-name{
+    font-family: var(--font-display);
+    font-size: 19px;
+    letter-spacing: 0.2px;
+  }
+  .brand-sub{
+    font-size: 11px;
+    color: var(--text-lo);
+    margin-top: -2px;
+  }
+
+  .new-chat-btn{
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 11px 14px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--panel-border);
+    background: linear-gradient(135deg, rgba(16,224,163,0.14), rgba(124,58,237,0.14));
+    color: var(--text-hi);
+    font-family: var(--font-body);
+    font-size: 13.5px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: border-color 0.2s ease, transform 0.15s ease;
+  }
+  .new-chat-btn:hover{ border-color: rgba(34,211,238,0.5); transform: translateY(-1px); }
+  .new-chat-btn:active{ transform: translateY(0); }
+
+  .history-label{
+    font-size: 11px;
+    color: var(--text-lo);
+    margin: 20px 8px 8px 8px;
+  }
+  .history-list{
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding-right: 2px;
+  }
+  .history-list::-webkit-scrollbar{ width: 6px; }
+  .history-list::-webkit-scrollbar-thumb{ background: rgba(255,255,255,0.08); border-radius: 4px; }
+
+  .history-item{
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    padding: 9px 10px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--text-lo);
+    border: 1px solid transparent;
+    transition: background 0.15s ease, color 0.15s ease;
+  }
+  .history-item:hover{ background: rgba(255,255,255,0.05); color: var(--text-hi); }
+  .history-item.active{
+    background: rgba(34, 211, 238, 0.10);
+    border-color: rgba(34, 211, 238, 0.28);
+    color: var(--text-hi);
+  }
+  .history-item .h-title{
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;
+  }
+  .history-item .h-del{
+    opacity: 0; flex-shrink: 0; width: 20px; height: 20px; border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--text-lo); background: transparent; border: none; cursor: pointer;
+  }
+  .history-item:hover .h-del{ opacity: 1; }
+  .history-item .h-del:hover{ color: var(--danger); background: rgba(255,93,122,0.12); }
+
+  .sidebar-footer{
+    padding-top: 12px;
+    margin-top: 8px;
+    border-top: 1px solid var(--panel-border);
+    font-size: 11px;
+    color: var(--text-lo);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .status-dot{ display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:6px; }
+  .status-dot.gray{ background:#5a6270; }
+  .status-dot.green{ background: var(--emerald); box-shadow: 0 0 6px var(--emerald); }
+  .status-dot.amber{ background:#f5b544; box-shadow: 0 0 6px #f5b544; }
+  .status-dot.red{ background: var(--danger); box-shadow: 0 0 6px var(--danger); }
+
+  /* ---------- Main column ---------- */
+  .main-col{
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    height: 100%;
+  }
+
+  .topbar{
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 14px 22px;
+    border-bottom: 1px solid var(--panel-border);
+    background: rgba(8, 9, 14, 0.35);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+  }
+  .icon-btn{
+    width: 34px; height: 34px;
+    border-radius: 10px;
+    border: 1px solid var(--panel-border);
+    background: rgba(255,255,255,0.03);
+    color: var(--text-hi);
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background 0.15s ease, border-color 0.15s ease;
+  }
+  .icon-btn:hover{ background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.18); }
+
+  .topbar-title{
+    font-family: var(--font-display);
+    font-size: 15.5px;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-hi);
+  }
+
+  .model-pill{
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 11.5px;
+    color: var(--text-lo);
+    padding: 6px 11px;
+    border-radius: 999px;
+    border: 1px solid var(--panel-border);
+    background: rgba(255,255,255,0.03);
+    white-space: nowrap;
+  }
+
+  /* Web search toggle */
+  .search-toggle{
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px 6px 6px;
+    border-radius: 999px;
+    border: 1px solid var(--panel-border);
+    background: rgba(255,255,255,0.03);
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+  }
+  .switch{
+    position: relative;
+    width: 34px; height: 20px;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.12);
+    transition: background 0.25s ease;
+    flex-shrink: 0;
+  }
+  .switch::after{
+    content:"";
+    position: absolute;
+    top: 2px; left: 2px;
+    width: 16px; height: 16px;
+    border-radius: 50%;
+    background: #cfd6e0;
+    transition: transform 0.25s cubic-bezier(.65,0,.35,1), background 0.25s ease;
+  }
+  .search-toggle.on .switch{ background: linear-gradient(90deg, var(--emerald), var(--cyan)); }
+  .search-toggle.on .switch::after{ transform: translateX(14px); background: #05221c; }
+  .search-toggle-label{ font-size: 12.5px; color: var(--text-lo); }
+  .search-toggle.on .search-toggle-label{ color: var(--text-hi); }
+
+  /* ---------- Chat scroll area ---------- */
+  .chat-scroll{
+    flex: 1;
+    overflow-y: auto;
+    padding: 26px 0 10px 0;
+  }
+  .chat-scroll::-webkit-scrollbar{ width: 8px; }
+  .chat-scroll::-webkit-scrollbar-thumb{ background: rgba(255,255,255,0.08); border-radius: 4px; }
+
+  .chat-col{
+    max-width: 780px;
+    margin: 0 auto;
+    padding: 0 24px 24px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+  }
+
+  .empty-state{
+    margin-top: 8vh;
+    text-align: center;
+    color: var(--text-lo);
+  }
+  .empty-state h1{
+    font-family: var(--font-display);
+    font-weight: 500;
+    font-size: 34px;
+    color: var(--text-hi);
+    margin: 0 0 10px 0;
+    letter-spacing: -0.3px;
+  }
+  .empty-state p{ font-size: 14.5px; max-width: 460px; margin: 0 auto; line-height: 1.6; }
+  .suggestion-row{
+    display: flex; flex-wrap: wrap; justify-content: center; gap: 10px;
+    margin-top: 26px;
+  }
+  .suggestion-chip{
+    padding: 10px 16px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--panel-border);
+    background: rgba(255,255,255,0.03);
+    color: var(--text-hi);
+    font-size: 13px;
+    cursor: pointer;
+    transition: border-color 0.2s ease, background 0.2s ease;
+  }
+  .suggestion-chip:hover{ border-color: rgba(34,211,238,0.4); background: rgba(34,211,238,0.06); }
+
+  /* Message bubbles */
+  .msg-row{ display: flex; gap: 12px; align-items: flex-start; }
+  .msg-row.user{ flex-direction: row-reverse; }
+  .msg-avatar{
+    width: 30px; height: 30px; border-radius: 9px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; font-weight: 700; margin-top: 2px;
+  }
+  .msg-avatar.assistant{
+    background: conic-gradient(from 120deg, var(--emerald), var(--cyan), var(--purple));
+    color: #04121a;
+  }
+  .msg-avatar.user{
+    background: rgba(255,255,255,0.08);
+    border: 1px solid var(--panel-border);
+    color: var(--text-hi);
+  }
+  .msg-bubble{
+    max-width: 82%;
+    padding: 13px 16px;
+    border-radius: var(--radius-md);
+    font-size: 14.5px;
+    line-height: 1.62;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+  }
+  .msg-row.assistant .msg-bubble{
+    background: var(--panel);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+    border: 1px solid var(--panel-border);
+    border-top-left-radius: 4px;
+  }
+  .msg-row.user .msg-bubble{
+    background: linear-gradient(135deg, rgba(124,58,237,0.32), rgba(34,211,238,0.18));
+    border: 1px solid rgba(124,58,237,0.35);
+    border-top-right-radius: 4px;
+  }
+  .msg-bubble .cursor-blink{
+    display: inline-block; width: 7px; height: 15px; margin-left: 2px;
+    background: var(--cyan); vertical-align: text-bottom;
+    animation: blink 0.9s steps(1) infinite;
+  }
+  @keyframes blink{ 50%{ opacity: 0; } }
+
+  .sources-box{
+    margin-top: 10px;
+    padding: 10px 12px;
+    border-radius: var(--radius-sm);
+    background: rgba(0,0,0,0.22);
+    border: 1px solid rgba(255,255,255,0.06);
+    font-size: 12px;
+    color: var(--text-lo);
+  }
+  .sources-box .sources-title{
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--emerald);
+    margin-bottom: 6px;
+    display: block;
+  }
+  .sources-box a{ color: var(--cyan); text-decoration: none; }
+  .sources-box a:hover{ text-decoration: underline; }
+  .sources-box ol{ margin: 0; padding-left: 18px; }
+  .sources-box li{ margin-bottom: 3px; }
+
+  .refusal-bubble{
+    border-color: rgba(255,93,122,0.35) !important;
+    background: rgba(255,93,122,0.07) !important;
+  }
+
+  /* ---------- Pipeline badge checklist ---------- */
+  .pipeline-card{
+    background: var(--panel);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+    border: 1px solid var(--panel-border);
+    border-radius: var(--radius-md);
+    padding: 14px 16px;
+    max-width: 82%;
+    margin-left: 42px;
+  }
+  .pipeline-title{
+    font-size: 11px;
+    color: var(--text-lo);
+    margin-bottom: 10px;
+    letter-spacing: 0.3px;
+  }
+  .pipeline-badges{
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .badge{
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 7px 11px;
+    border-radius: 999px;
+    border: 1px solid var(--panel-border);
+    background: rgba(255,255,255,0.03);
+    font-size: 12px;
+    color: var(--text-lo);
+    transition: all 0.35s cubic-bezier(.65,0,.35,1);
+  }
+  .badge .dot{
+    width: 7px; height: 7px; border-radius: 50%;
+    background: #4a5162;
+    transition: all 0.35s ease;
+    flex-shrink: 0;
+  }
+  .badge.active{
+    color: var(--text-hi);
+    border-color: rgba(34, 211, 238, 0.4);
+    background: rgba(34, 211, 238, 0.08);
+    box-shadow: 0 0 14px rgba(34, 211, 238, 0.18);
+  }
+  .badge.active .dot{
+    background: var(--emerald);
+    box-shadow: 0 0 8px var(--emerald);
+    animation: dot-pulse 1s ease-in-out infinite;
+  }
+  .badge.done{
+    color: var(--text-hi);
+    border-color: rgba(16, 224, 163, 0.35);
+    background: rgba(16, 224, 163, 0.06);
+  }
+  .badge.done .dot{ background: var(--emerald); box-shadow: none; animation: none; }
+  .badge.blocked{
+    color: var(--danger);
+    border-color: rgba(255,93,122,0.4);
+    background: rgba(255,93,122,0.08);
+  }
+  .badge.blocked .dot{ background: var(--danger); }
+  @keyframes dot-pulse{ 0%,100%{ transform: scale(1); opacity: 1; } 50%{ transform: scale(1.5); opacity: 0.5; } }
+
+  /* ---------- Composer ---------- */
+  .composer-wrap{
+    padding: 14px 24px 20px 24px;
+  }
+  .composer{
+    max-width: 780px;
+    margin: 0 auto;
+    background: var(--panel);
+    backdrop-filter: blur(22px) saturate(140%);
+    -webkit-backdrop-filter: blur(22px) saturate(140%);
+    border: 1px solid var(--panel-border);
+    border-radius: var(--radius-lg);
+    padding: 10px 10px 10px 18px;
+    display: flex;
+    align-items: flex-end;
+    gap: 10px;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.35);
+  }
+  .composer textarea{
+    flex: 1;
+    resize: none;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--text-hi);
+    font-family: var(--font-body);
+    font-size: 14.5px;
+    line-height: 1.5;
+    max-height: 160px;
+    padding: 10px 0;
+  }
+  .composer textarea::placeholder{ color: var(--text-lo); }
+  .send-btn{
+    width: 42px; height: 42px;
+    border-radius: 12px;
+    border: none;
+    background: linear-gradient(135deg, var(--emerald), var(--cyan));
+    color: #04141c;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: transform 0.15s ease, opacity 0.2s ease;
+  }
+  .send-btn:hover:not(:disabled){ transform: translateY(-1px) scale(1.03); }
+  .send-btn:disabled{ opacity: 0.35; cursor: not-allowed; }
+  .stop-btn{
+    width: 42px; height: 42px;
+    border-radius: 12px;
+    border: 1px solid rgba(255,93,122,0.4);
+    background: rgba(255,93,122,0.1);
+    color: var(--danger);
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  .composer-footnote{
+    max-width: 780px;
+    margin: 8px auto 0 auto;
+    text-align: center;
+    font-size: 10.5px;
+    color: var(--text-lo);
+    opacity: 0.75;
+  }
+
+  /* ---------- Boot overlay ---------- */
+  .boot-overlay{
+    position: fixed; inset: 0; z-index: 50;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(5,6,10,0.88);
+    backdrop-filter: blur(6px);
+    transition: opacity 0.5s ease, visibility 0.5s ease;
+  }
+  .boot-overlay.hidden{ opacity: 0; visibility: hidden; pointer-events: none; }
+  .boot-card{
+    width: min(460px, 88vw);
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: var(--radius-lg);
+    padding: 30px 28px;
+    backdrop-filter: blur(20px);
+  }
+  .boot-card h2{
+    font-family: var(--font-display);
+    font-weight: 500;
+    font-size: 22px;
+    margin: 0 0 6px 0;
+  }
+  .boot-card p{ color: var(--text-lo); font-size: 13px; margin: 0 0 20px 0; line-height: 1.55; }
+  .boot-bar-track{
+    width: 100%; height: 8px; border-radius: 999px;
+    background: rgba(255,255,255,0.07);
+    overflow: hidden;
+    margin-bottom: 10px;
+  }
+  .boot-bar-fill{
+    height: 100%; width: 0%;
+    background: linear-gradient(90deg, var(--emerald), var(--cyan), var(--purple));
+    border-radius: 999px;
+    transition: width 0.3s ease;
+  }
+  .boot-status-line{
+    display: flex; justify-content: space-between;
+    font-size: 11.5px; color: var(--text-lo);
+    font-family: var(--font-mono);
+  }
+  .boot-error{
+    margin-top: 16px;
+    padding: 12px 14px;
+    border-radius: var(--radius-sm);
+    background: rgba(255,93,122,0.08);
+    border: 1px solid rgba(255,93,122,0.3);
+    font-size: 12.5px;
+    color: #ffb3c1;
+    line-height: 1.5;
+    display: none;
+  }
+  .boot-error.show{ display: block; }
+  .retry-wasm-btn{
+    margin-top: 10px;
+    padding: 8px 14px;
+    border-radius: 8px;
+    border: 1px solid rgba(255,93,122,0.4);
+    background: rgba(255,93,122,0.12);
+    color: #ffdbe2;
+    font-size: 12px;
+    cursor: pointer;
+  }
+
+  /* ---------- Mobile ---------- */
+  @media (max-width: 820px){
+    .app-shell{ grid-template-columns: 0px 1fr; }
+    .sidebar{ position: fixed; top:0; left:0; bottom:0; width: 280px; z-index: 30; transform: translateX(-100%); transition: transform 0.3s ease; border-right: 1px solid var(--panel-border); }
+    .app-shell.sidebar-open .sidebar{ transform: translateX(0); }
+    .app-shell.sidebar-open::after{
+      content:""; position: fixed; inset:0; background: rgba(0,0,0,0.5); z-index: 25;
+    }
+    .model-pill{ display: none; }
+    .pipeline-card{ margin-left: 0; max-width: 100%; }
+    .msg-bubble{ max-width: 90%; }
+  }
+</style>
+</head>
+<body>
+
+<div class="aurora-stage"></div>
+<div class="noise-vignette"></div>
+
+<!-- ============ BOOT OVERLAY ============ -->
+<div class="boot-overlay" id="bootOverlay">
+  <div class="boot-card">
+    <h2 id="bootTitle">Waking up the model</h2>
+    <p id="bootSubtitle">Downloading Qwen2.5-1.5B-Instruct (ONNX / WebGPU build). This happens once — after that it's cached in your browser and loads instantly.</p>
+    <div class="boot-bar-track"><div class="boot-bar-fill" id="bootBarFill"></div></div>
+    <div class="boot-status-line">
+      <span id="bootStatusText">Contacting model host…</span>
+      <span id="bootPercentText">0%</span>
+    </div>
+    <div class="boot-error" id="bootError">
+      <strong>WebGPU didn't come up cleanly.</strong>
+      <div id="bootErrorDetail" style="margin-top:6px;"></div>
+      <button class="retry-wasm-btn" id="retryWasmBtn">Retry on CPU (WASM) instead</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ APP SHELL ============ -->
+<div class="app-shell" id="appShell">
+
+  <!-- SIDEBAR -->
+  <aside class="sidebar">
+    <div class="sidebar-inner">
+      <div class="brand">
+        <div class="brand-mark"></div>
+        <div>
+          <div class="brand-name">Aurora</div>
+          <div class="brand-sub">local model · your browser only</div>
+        </div>
+      </div>
+
+      <button class="new-chat-btn" id="newChatBtn">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        New chat
+      </button>
+
+      <div class="history-label">History</div>
+      <div class="history-list" id="historyList"></div>
+
+      <div class="sidebar-footer">
+        <div><span class="status-dot gray" id="gpuDot"></span><span id="gpuStatusText">Checking WebGPU…</span></div>
+        <div><span class="status-dot gray" id="netDot"></span><span id="netStatusText">Web search: off</span></div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- MAIN -->
+  <div class="main-col">
+    <div class="topbar">
+      <button class="icon-btn" id="sidebarToggleBtn" title="Toggle sidebar" aria-label="Toggle sidebar">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="16" rx="2" stroke="currentColor" stroke-width="1.8"/><line x1="9" y1="4" x2="9" y2="20" stroke="currentColor" stroke-width="1.8"/></svg>
+      </button>
+      <div class="topbar-title" id="topbarTitle">New chat</div>
+      <div class="model-pill">
+        <span class="status-dot green" id="modelPillDot"></span>
+        <span id="modelPillText">Qwen2.5-1.5B · WebGPU</span>
+      </div>
+      <div class="search-toggle" id="searchToggle" role="switch" aria-checked="false" tabindex="0">
+        <div class="switch"></div>
+        <span class="search-toggle-label">Live Web Search</span>
+      </div>
+    </div>
+
+    <div class="chat-scroll" id="chatScroll">
+      <div class="chat-col" id="chatCol">
+        <div class="empty-state" id="emptyState">
+          <h1>Ask me anything</h1>
+          <p>Everything runs locally on your GPU via WebGPU — no server, no API key, nothing leaves your machine except optional live search queries when you turn that on.</p>
+          <div class="suggestion-row">
+            <div class="suggestion-chip" data-suggest="Explain how WebGPU differs from WebGL in plain terms.">Explain WebGPU vs WebGL</div>
+            <div class="suggestion-chip" data-suggest="What's a clean way to debounce a search input in vanilla JavaScript?">Debounce a search input</div>
+            <div class="suggestion-chip" data-suggest="Summarize the latest news about AI chips.">Latest AI chip news</div>
+            <div class="suggestion-chip" data-suggest="Write a short poem about the aurora borealis.">A poem about auroras</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="composer-wrap">
+      <div class="composer">
+        <textarea id="promptInput" rows="1" placeholder="Message Aurora…"></textarea>
+        <button class="send-btn" id="sendBtn" title="Send" aria-label="Send">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M4 12L20 4L14 20L11 13L4 12Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" fill="currentColor"/></svg>
+        </button>
+        <button class="stop-btn" id="stopBtn" title="Stop generating" aria-label="Stop generating" style="display:none;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><rect x="5" y="5" width="14" height="14" rx="2" fill="currentColor"/></svg>
+        </button>
+      </div>
+      <div class="composer-footnote">Aurora runs entirely in your browser. Model weights are cached locally after the first load.</div>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import { pipeline, TextStreamer, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.2';
+
+/* ============================================================
+   0. ENVIRONMENT CONFIGURATION
+   ============================================================ */
+env.allowLocalModels = false;
+env.useBrowserCache = true;         // IndexedDB-backed cache — model only downloads once
+env.useCustomCache = false;
+if (env.backends && env.backends.onnx && env.backends.onnx.wasm) {
+  env.backends.onnx.wasm.proxy = false;
+  // Use every available core for the WASM fallback path.
+  env.backends.onnx.wasm.numThreads = navigator.hardwareConcurrency || 4;
+}
+
+/* ============================================================
+   0.1 AI TUNING MODULE — every generation/model knob lives here
+   ============================================================ */
+const AI_CONFIG = {
+  MODEL_ID: 'Qwen/Qwen2.5-1.5B-Instruct',
+
+  // Sampling — Qwen2.5's own model card recommends this neighborhood
+  // for instruction-following without going incoherent or repetitive.
+  GENERATION: {
+    max_new_tokens: 640,
+    temperature: 0.7,
+    top_p: 0.8,
+    top_k: 20,
+    repetition_penalty: 1.05,
+    do_sample: true,
+  },
+
+  // How much prior conversation to feed back in as context. Higher
+  // = more coherent long chats, but slower prompt-processing per turn.
+  HISTORY_WINDOW: 8,
+
+  // RAG tuning
+  RAG: {
+    MAX_RESULTS: 5,
+    SNIPPET_CHARS: 280,
+    SEARCH_TIMEOUT_MS: 9000,
+  },
+
+  // dtype candidates in priority order per backend — first one that
+  // fits the detected GPU memory budget wins. See selectDtype() below.
+  DTYPE_LADDER_WEBGPU: [
+    { minVramMB: 3000, dtype: 'fp16' },
+    { minVramMB: 1200, dtype: 'q4f16' },
+    { minVramMB: 0,    dtype: 'q4' },
+  ],
+  DTYPE_LADDER_WASM: [
+    { minVramMB: 0, dtype: 'q8' },
+  ],
+};
+
+const MODEL_ID = AI_CONFIG.MODEL_ID;
+
+/* ============================================================
+   1. DOM REFERENCES
+   ============================================================ */
+const $ = (id) => document.getElementById(id);
+
+const bootOverlay      = $('bootOverlay');
+const bootTitle        = $('bootTitle');
+const bootSubtitle     = $('bootSubtitle');
+const bootBarFill      = $('bootBarFill');
+const bootStatusText   = $('bootStatusText');
+const bootPercentText  = $('bootPercentText');
+const bootError        = $('bootError');
+const bootErrorDetail  = $('bootErrorDetail');
+const retryWasmBtn     = $('retryWasmBtn');
+
+const appShell         = $('appShell');
+const sidebarToggleBtn = $('sidebarToggleBtn');
+const newChatBtn       = $('newChatBtn');
+const historyList      = $('historyList');
+const gpuDot           = $('gpuDot');
+const gpuStatusText    = $('gpuStatusText');
+const netDot           = $('netDot');
+const netStatusText    = $('netStatusText');
+
+const topbarTitle      = $('topbarTitle');
+const modelPillDot     = $('modelPillDot');
+const modelPillText    = $('modelPillText');
+const searchToggle     = $('searchToggle');
+
+const chatScroll       = $('chatScroll');
+const chatCol          = $('chatCol');
+const emptyState       = $('emptyState');
+
+const promptInput      = $('promptInput');
+const sendBtn          = $('sendBtn');
+const stopBtn          = $('stopBtn');
+
+/* ============================================================
+   2. STATE
+   ============================================================ */
+let generator = null;
+let deviceInUse = null;       // 'webgpu' | 'wasm'
+let webSearchEnabled = false;
+let isGenerating = false;
+let abortRequested = false;
+
+const STORAGE_KEY = 'aurora_chat_sessions_v1';
+let sessions = loadSessions();          // { id, title, messages: [{role, content, sources?}], createdAt }
+let activeSessionId = null;
+
+/* ============================================================
+   3. SAFETY GUARD — dual layer regex classifier
+   ============================================================
+   Layer 1: high-confidence blocklist (weapons/explosives synthesis,
+            CSAM, illegal drug manufacturing, malware creation, etc.)
+   Layer 2: contextual co-occurrence check (a benign word next to a
+            "how to build/make/synthesize" instruction verb).
+   This runs BEFORE any web search or model call.
+*/
+const SAFETY_LAYER1_PATTERNS = [
+  /\b(how\s+to\s+)?(make|build|synthes\w*|manufactur\w*)\b.{0,40}\b(bomb|explosive|nerve\s*agent|sarin|ricin|anthrax|bioweapon|chemical\s*weapon|nuclear\s*device|dirty\s*bomb)\b/i,
+  /\b(child\s*sexual|csam|minor\w*\s*sexual\w*)\b/i,
+  /\b(how\s+to\s+)?(make|cook|synthes\w*)\b.{0,40}\b(meth|methamphetamine|fentanyl|heroin|crystal\s*meth)\b/i,
+  /\bhow\s+to\s+(hack|breach|exploit)\b.{0,40}\b(bank|government|voting\s*system|election\s*system)\b/i,
+  /\b(create|write|build)\b.{0,30}\b(ransomware|computer\s*virus|malware|keylogger|botnet)\b/i,
+  /\bhow\s+to\s+(kill|murder|assassinate)\b.{0,30}\b(someone|a\s*person|my\s*\w+)\b/i,
+];
+const SAFETY_LAYER2_VERBS = /\b(build|make|create|synthesize|manufacture|construct|assemble)\b/i;
+const SAFETY_LAYER2_NOUNS = /\b(explosive|detonator|pipe\s*bomb|untraceable\s*firearm|3d[- ]printed\s*gun|biological\s*agent|chemical\s*agent|poison\s*gas)\b/i;
+
+function safetyCheck(text){
+  for (const rx of SAFETY_LAYER1_PATTERNS){
+    if (rx.test(text)) return { blocked: true, layer: 1 };
+  }
+  if (SAFETY_LAYER2_VERBS.test(text) && SAFETY_LAYER2_NOUNS.test(text)){
+    return { blocked: true, layer: 2 };
+  }
+  return { blocked: false };
+}
+
+/* ============================================================
+   4. LIVE WEB SEARCH (client-side RAG)
+   ============================================================
+   Strategy: scrape DuckDuckGo's no-JS HTML endpoint through a
+   public CORS proxy, since DDG doesn't expose a free JSON API and
+   the browser can't hit it directly due to CORS. We try a small
+   chain of proxies/endpoints and fail soft if all of them are
+   unavailable (they are unofficial and can go down or rate-limit).
+*/
+const SEARCH_PROXIES = [
+  (target) => `https://api.allorigins.win/raw?url=${encodeURIComponent(target)}`,
+  (target) => `https://corsproxy.io/?url=${encodeURIComponent(target)}`,
+  (target) => `https://r.jina.ai/${target}`, // returns readable text directly, no HTML parsing needed
+];
+
+async function fetchWithTimeout(url, ms){
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), ms);
+  try{
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(t);
+    return res;
+  } catch(e){
+    clearTimeout(t);
+    throw e;
+  }
+}
+
+function parseDuckDuckGoHtml(html){
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const results = [];
+  const nodes = doc.querySelectorAll('.result, .web-result');
+  nodes.forEach((node) => {
+    const titleEl = node.querySelector('.result__a, .result__title a');
+    const snippetEl = node.querySelector('.result__snippet');
+    const urlEl = node.querySelector('.result__url');
+    if (titleEl){
+      results.push({
+        title: cleanText(titleEl.textContent),
+        snippet: snippetEl ? cleanText(snippetEl.textContent) : '',
+        url: urlEl ? ('https://' + cleanText(urlEl.textContent).replace(/^https?:\/\//,'')) : (titleEl.href || '')
+      });
+    }
+  });
+  return results;
+}
+
+function cleanText(t){
+  return (t || '').replace(/\s+/g, ' ').trim();
+}
+
+// Naive text chunker: splits a longer text into ~N-char snippets on sentence boundaries
+function chunkText(text, maxChars = 320){
+  const sentences = text.split(/(?<=[.!?])\s+/);
+  const chunks = [];
+  let current = '';
+  for (const s of sentences){
+    if ((current + ' ' + s).length > maxChars){
+      if (current) chunks.push(current.trim());
+      current = s;
+    } else {
+      current += (current ? ' ' : '') + s;
+    }
+  }
+  if (current) chunks.push(current.trim());
+  return chunks;
+}
+
+async function performLiveSearch(query, onStage){
+  const target = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+
+  // Race both HTML-scrape proxies in parallel instead of trying them one
+  // at a time — worst case latency drops from proxy1+proxy2 to max(proxy1,proxy2).
+  onStage('Querying search proxies…');
+  const attempts = [0, 1].map(async (i) => {
+    try{
+      const res = await fetchWithTimeout(SEARCH_PROXIES[i](target), AI_CONFIG.RAG.SEARCH_TIMEOUT_MS);
+      if (!res.ok) throw new Error(`Proxy responded ${res.status}`);
+      const html = await res.text();
+      return parseDuckDuckGoHtml(html);
+    } catch(err){
+      console.warn('Search proxy failed:', SEARCH_PROXIES[i](target), err);
+      return [];
+    }
+  });
+
+  const [resultsA, resultsB] = await Promise.all(attempts);
+  const best = resultsA.length ? resultsA : resultsB;
+  if (best.length > 0) return best.slice(0, AI_CONFIG.RAG.MAX_RESULTS);
+
+  // Both scrape attempts came back empty — fall back to reader-mode text extraction.
+  try{
+    onStage('Trying reader-mode fallback…');
+    const readerUrl = SEARCH_PROXIES[2](`https://duckduckgo.com/html/?q=${encodeURIComponent(query)}`);
+    const res = await fetchWithTimeout(readerUrl, AI_CONFIG.RAG.SEARCH_TIMEOUT_MS);
+    if (res.ok){
+      const text = await res.text();
+      const chunks = chunkText(text, 300).filter(c => c.length > 40).slice(0, AI_CONFIG.RAG.MAX_RESULTS);
+      if (chunks.length > 0){
+        return chunks.map((c, idx) => ({ title: `Web result ${idx + 1}`, snippet: c, url: '' }));
+      }
+    }
+  } catch(err){
+    console.warn('Reader-mode fallback failed:', err);
+  }
+
+  return []; // fail soft — caller decides how to proceed
+}
+
+function buildRagContextBlock(results){
+  if (!results.length) return null;
+  const lines = results.map((r, i) => {
+    const chunks = chunkText(r.snippet, 280);
+    const body = chunks[0] || r.snippet;
+    return `[${i + 1}] ${r.title ? r.title + ' — ' : ''}${body}`;
+  });
+  return lines.join('\n');
+}
+
+/* ============================================================
+   5. PIPELINE BADGES (honest stage labels tied to real work)
+   ============================================================ */
+const PIPELINE_STAGES = [
+  { id: 'search',   label: 'Web Retrieval' },
+  { id: 'safety',   label: 'Safety Filter' },
+  { id: 'context',  label: 'Context Fusion' },
+  { id: 'reason',   label: 'Reasoning Engine' },
+  { id: 'format',   label: 'Response Formatting' },
+];
+
+function renderPipelineCard(){
+  const card = document.createElement('div');
+  card.className = 'pipeline-card';
+  card.innerHTML = `
+    <div class="pipeline-title">Processing pipeline</div>
+    <div class="pipeline-badges">
+      ${PIPELINE_STAGES.map(s => `<div class="badge" data-stage="${s.id}"><span class="dot"></span>${s.label}</div>`).join('')}
+    </div>
+  `;
+  return card;
+}
+
+function setBadgeState(card, stageId, state){
+  const badge = card.querySelector(`.badge[data-stage="${stageId}"]`);
+  if (!badge) return;
+  badge.classList.remove('active', 'done', 'blocked');
+  if (state) badge.classList.add(state);
+}
+
+/* ============================================================
+   6. SESSION / HISTORY MANAGEMENT (localStorage)
+   ============================================================ */
+function loadSessions(){
+  try{
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch(e){ return []; }
+}
+function persistSessions(){
+  try{
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions));
+  } catch(e){ console.warn('Could not persist chat history', e); }
+}
+function createSession(){
+  const s = { id: 'sess_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8), title: 'New chat', messages: [], createdAt: Date.now() };
+  sessions.unshift(s);
+  activeSessionId = s.id;
+  persistSessions();
+  renderHistoryList();
+  renderActiveSession();
+  return s;
+}
+function getActiveSession(){
+  return sessions.find(s => s.id === activeSessionId) || null;
+}
+function deleteSession(id){
+  sessions = sessions.filter(s => s.id !== id);
+  persistSessions();
+  if (activeSessionId === id){
+    if (sessions.length){
+      activeSessionId = sessions[0].id;
+      renderActiveSession();
+    } else {
+      createSession();
+    }
+  }
+  renderHistoryList();
+}
+function switchSession(id){
+  activeSessionId = id;
+  renderHistoryList();
+  renderActiveSession();
+}
+function renderHistoryList(){
+  historyList.innerHTML = '';
+  sessions.forEach(s => {
+    const item = document.createElement('div');
+    item.className = 'history-item' + (s.id === activeSessionId ? ' active' : '');
+    item.innerHTML = `<span class="h-title">${escapeHtml(s.title || 'New chat')}</span><button class="h-del" title="Delete">✕</button>`;
+    item.querySelector('.h-title').addEventListener('click', () => switchSession(s.id));
+    item.querySelector('.h-del').addEventListener('click', (e) => { e.stopPropagation(); deleteSession(s.id); });
+    historyList.appendChild(item);
+  });
+}
+function renderActiveSession(){
+  const s = getActiveSession();
+  chatCol.innerHTML = '';
+  if (!s || s.messages.length === 0){
+    chatCol.appendChild(emptyState);
+    topbarTitle.textContent = 'New chat';
+    return;
+  }
+  emptyState.remove?.();
+  topbarTitle.textContent = s.title || 'New chat';
+  s.messages.forEach(m => {
+    appendMessageBubble(m.role, m.content, m.sources, false);
+  });
+  scrollChatToBottom();
+}
+function escapeHtml(str){
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+/* ============================================================
+   7. CHAT UI RENDERING
+   ============================================================ */
+function scrollChatToBottom(){
+  chatScroll.scrollTop = chatScroll.scrollHeight;
+}
+
+function appendMessageBubble(role, content, sources, animate){
+  if (document.getElementById('emptyState')) $('emptyState')?.remove();
+  const row = document.createElement('div');
+  row.className = `msg-row ${role}`;
+  const avatar = document.createElement('div');
+  avatar.className = `msg-avatar ${role}`;
+  avatar.textContent = role === 'user' ? 'You' : '✦';
+  const bubble = document.createElement('div');
+  bubble.className = 'msg-bubble';
+  bubble.textContent = content;
+
+  row.appendChild(avatar);
+  row.appendChild(bubble);
+  chatCol.appendChild(row);
+
+  if (sources && sources.length){
+    const box = document.createElement('div');
+    box.className = 'sources-box';
+    box.style.marginLeft = '42px';
+    box.innerHTML = `<span class="sources-title">Grounded with live web results</span><ol>${
+      sources.map(s => `<li>${s.url ? `<a href="${s.url}" target="_blank" rel="noopener">${escapeHtml(s.title || s.url)}</a>` : escapeHtml(s.title || 'Web snippet')}</li>`).join('')
+    }</ol>`;
+    chatCol.appendChild(box);
+  }
+
+  scrollChatToBottom();
+  return bubble;
+}
+
+/* ============================================================
+   8. MODEL BOOTSTRAP
+   ============================================================ */
+// Probes the adapter's reported max buffer size as a cheap proxy for
+// available VRAM, then walks AI_CONFIG's dtype ladder to pick the
+// heaviest precision that should comfortably fit. Falls back to the
+// safest (smallest) dtype if anything about the probe is unavailable.
+async function detectWebGPU(){
+  if (!('gpu' in navigator)) return { ok: false, vramMB: 0 };
+  try{
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) return { ok: false, vramMB: 0 };
+    const limits = adapter.limits || {};
+    const maxBufferBytes = limits.maxBufferSize || limits.maxStorageBufferBindingSize || 0;
+    const vramMB = Math.round(maxBufferBytes / (1024 * 1024));
+    return { ok: true, vramMB };
+  } catch(e){
+    return { ok: false, vramMB: 0 };
+  }
+}
+
+function selectDtype(hasWebGPU, vramMB){
+  const ladder = hasWebGPU ? AI_CONFIG.DTYPE_LADDER_WEBGPU : AI_CONFIG.DTYPE_LADDER_WASM;
+  for (const rung of ladder){
+    if (vramMB >= rung.minVramMB) return rung.dtype;
+  }
+  return ladder[ladder.length - 1].dtype;
+}
+
+async function initModel(forceWasm = false){
+  bootError.classList.remove('show');
+  const probe = forceWasm ? { ok: false, vramMB: 0 } : await detectWebGPU();
+  const hasWebGPU = probe.ok;
+  deviceInUse = hasWebGPU ? 'webgpu' : 'wasm';
+  const chosenDtype = selectDtype(hasWebGPU, probe.vramMB);
+
+  gpuDot.className = 'status-dot ' + (hasWebGPU ? 'green' : 'amber');
+  gpuStatusText.textContent = hasWebGPU
+    ? `WebGPU active · ${chosenDtype} · ~${probe.vramMB || '?'}MB budget`
+    : 'WebGPU unavailable — using WASM (CPU)';
+  modelPillText.textContent = `Qwen2.5-1.5B · ${hasWebGPU ? 'WebGPU' : 'WASM'} · ${chosenDtype}`;
+
+  bootSubtitle.textContent = hasWebGPU
+    ? `Downloading Qwen2.5-1.5B-Instruct (ONNX, ${chosenDtype} build). This happens once — after that it's cached in your browser and loads instantly.`
+    : 'Your browser doesn\'t expose a WebGPU adapter, so Aurora will run on WebAssembly instead. It works the same, just slower per token.';
+
+  try{
+    generator = await pipeline('text-generation', MODEL_ID, {
+      device: deviceInUse,
+      dtype: chosenDtype,
+      progress_callback: (progress) => {
+        if (progress.status === 'progress' && typeof progress.progress === 'number'){
+          const pct = Math.min(100, Math.round(progress.progress));
+          bootBarFill.style.width = pct + '%';
+          bootPercentText.textContent = pct + '%';
+          bootStatusText.textContent = `Fetching ${progress.file || 'model shard'}…`;
+        } else if (progress.status === 'done'){
+          bootStatusText.textContent = `Cached ${progress.file || 'shard'} ✓`;
+        } else if (progress.status === 'ready'){
+          bootStatusText.textContent = 'Model ready.';
+          bootBarFill.style.width = '100%';
+          bootPercentText.textContent = '100%';
+        }
+      }
+    });
+
+    bootTitle.textContent = 'Ready';
+    bootStatusText.textContent = 'Warming up first inference…';
+    // tiny warmup pass so the very first user message doesn't eat the JIT/shader compile cost silently
+    await generator([{ role: 'user', content: 'Hi' }], { max_new_tokens: 1 });
+
+    bootOverlay.classList.add('hidden');
+    if (!sessions.length) createSession();
+    else { activeSessionId = sessions[0].id; renderHistoryList(); renderActiveSession(); }
+    promptInput.focus();
+
+  } catch(err){
+    console.error('Model init failed:', err);
+    bootError.classList.add('show');
+    bootErrorDetail.textContent = (err && err.message) ? err.message : String(err);
+    gpuDot.className = 'status-dot red';
+    gpuStatusText.textContent = 'Model failed to load';
+    if (hasWebGPU){
+      bootErrorDetail.textContent += ' — this is often a WebGPU/driver quirk. Try the WASM fallback below.';
+    } else {
+      retryWasmBtn.style.display = 'none';
+    }
+  }
+}
+
+retryWasmBtn.addEventListener('click', () => {
+  bootBarFill.style.width = '0%';
+  bootPercentText.textContent = '0%';
+  initModel(true);
+});
+
+/* ============================================================
+   9. GENERATION FLOW
+   ============================================================ */
+async function handleSend(){
+  const text = promptInput.value.trim();
+  if (!text || isGenerating || !generator) return;
+
+  const session = getActiveSession() || createSession();
+  if (session.messages.length === 0){
+    session.title = text.slice(0, 40) + (text.length > 40 ? '…' : '');
+    topbarTitle.textContent = session.title;
+    renderHistoryList();
+  }
+
+  promptInput.value = '';
+  autoGrowTextarea();
+  session.messages.push({ role: 'user', content: text });
+  persistSessions();
+  appendMessageBubble('user', text);
+
+  // ---- Safety guard runs before ANYTHING else ----
+  const safety = safetyCheck(text);
+
+  const pipelineCard = renderPipelineCard();
+  pipelineCard.style.marginLeft = '42px';
+  chatCol.appendChild(pipelineCard);
+  scrollChatToBottom();
+
+  if (safety.blocked){
+    setBadgeState(pipelineCard, 'safety', 'blocked');
+    await sleep(250);
+    const refusal = "I can't help with that request — it falls into a category I don't assist with (this was caught by the client-side safety filter before any search or generation happened).";
+    session.messages.push({ role: 'assistant', content: refusal });
+    persistSessions();
+    const bubble = appendMessageBubble('assistant', refusal);
+    bubble.classList.add('refusal-bubble');
+    return;
+  }
+  setBadgeState(pipelineCard, 'safety', 'done');
+
+  isGenerating = true;
+  abortRequested = false;
+  sendBtn.disabled = true;
+
+  let ragResults = [];
+  let ragContext = null;
+
+  // ---- Stage 1: optional live web search ----
+  if (webSearchEnabled){
+    setBadgeState(pipelineCard, 'search', 'active');
+    try{
+      ragResults = await performLiveSearch(text, (msg) => {
+        pipelineCard.querySelector('.pipeline-title').textContent = msg;
+      });
+      pipelineCard.querySelector('.pipeline-title').textContent = 'Processing pipeline';
+      ragContext = buildRagContextBlock(ragResults);
+    } catch(e){
+      console.warn('Live search failed entirely:', e);
+    }
+    setBadgeState(pipelineCard, 'search', ragResults.length ? 'done' : 'blocked');
+  } else {
+    setBadgeState(pipelineCard, 'search', 'done');
+  }
+
+  // ---- Stage 2: context fusion ----
+  setBadgeState(pipelineCard, 'context', 'active');
+  await sleep(120);
+  const systemPrompt = ragContext
+    ? `You are Aurora, a helpful assistant running locally in the user's browser. You have been given fresh internet context below — use it if relevant, and mention when you're drawing on it, but rely on your own knowledge if the context doesn't help.\n\n[Internet Context]:\n${ragContext}\n\n[User Question]: ${text}`
+    : `You are Aurora, a helpful, concise assistant running locally in the user's browser via WebGPU.`;
+  setBadgeState(pipelineCard, 'context', 'done');
+
+  // ---- Stage 3: reasoning (actual model generation) ----
+  setBadgeState(pipelineCard, 'reason', 'active');
+
+  const messages = [
+    { role: 'system', content: systemPrompt },
+    ...session.messages.slice(-AI_CONFIG.HISTORY_WINDOW).map(m => ({ role: m.role, content: m.content }))
+  ];
+
+  const assistantRow = document.createElement('div');
+  assistantRow.className = 'msg-row assistant';
+  assistantRow.innerHTML = `<div class="msg-avatar assistant">✦</div><div class="msg-bubble"><span class="streamed-text"></span><span class="cursor-blink"></span></div>`;
+  chatCol.appendChild(assistantRow);
+  const assistantBubble = assistantRow.querySelector('.msg-bubble');
+  const streamedTextEl = assistantRow.querySelector('.streamed-text');
+  const cursorEl = assistantRow.querySelector('.cursor-blink');
+  scrollChatToBottom();
+
+  sendBtn.style.display = 'none';
+  stopBtn.style.display = 'flex';
+
+  let streamed = '';
+  let firstToken = true;
+  let wasStopped = false;
+  let scrollScheduled = false;
+
+  // Batches scroll-to-bottom calls onto the next animation frame instead of
+  // forcing a layout/reflow on every single streamed token.
+  function scheduleScroll(){
+    if (scrollScheduled) return;
+    scrollScheduled = true;
+    requestAnimationFrame(() => { scrollChatToBottom(); scrollScheduled = false; });
+  }
+
+  try{
+    const streamer = new TextStreamer(generator.tokenizer, {
+      skip_prompt: true,
+      skip_special_tokens: true,
+      callback_function: (piece) => {
+        if (abortRequested){
+          wasStopped = true;
+          // Throwing here unwinds transformers.js's internal generation
+          // loop immediately, so the stop button takes effect mid-stream
+          // rather than waiting for max_new_tokens.
+          throw new Error('__aurora_generation_stopped__');
+        }
+        if (firstToken){
+          setBadgeState(pipelineCard, 'reason', 'done');
+          setBadgeState(pipelineCard, 'format', 'active');
+          firstToken = false;
+        }
+        streamed += piece;
+        // Append as a plain text node instead of re-escaping and re-parsing
+        // the whole bubble's HTML every token — O(1) work per token instead
+        // of the old O(n) "innerHTML = escapeHtml(everything so far)" approach.
+        streamedTextEl.appendChild(document.createTextNode(piece));
+        scheduleScroll();
+      }
+    });
+
+    await generator(messages, {
+      ...AI_CONFIG.GENERATION,
+      streamer
+    });
+
+    setBadgeState(pipelineCard, 'format', 'done');
+    cursorEl.remove();
+    if (!streamed) streamedTextEl.textContent = '(no output generated)';
+
+    session.messages.push({ role: 'assistant', content: streamed, sources: ragResults });
+    persistSessions();
+
+    if (ragResults.length){
+      const box = document.createElement('div');
+      box.className = 'sources-box';
+      box.style.marginLeft = '42px';
+      box.innerHTML = `<span class="sources-title">Grounded with live web results</span><ol>${
+        ragResults.map(s => `<li>${s.url ? `<a href="${s.url}" target="_blank" rel="noopener">${escapeHtml(s.title || s.url)}</a>` : escapeHtml(s.title || 'Web snippet')}</li>`).join('')
+      }</ol>`;
+      chatCol.appendChild(box);
+    }
+
+  } catch(err){
+    if (wasStopped || (err && err.message === '__aurora_generation_stopped__')){
+      setBadgeState(pipelineCard, 'format', 'done');
+      cursorEl.remove();
+      if (!streamed) streamedTextEl.textContent = '(stopped before any output)';
+      session.messages.push({ role: 'assistant', content: streamed, sources: ragResults });
+      persistSessions();
+    } else {
+      console.error('Generation error:', err);
+      setBadgeState(pipelineCard, 'reason', 'blocked');
+      cursorEl.remove();
+      streamedTextEl.textContent = 'Something went wrong during generation on this device. Check the console for details, or try reloading the page.';
+    }
+  } finally {
+    isGenerating = false;
+    sendBtn.disabled = false;
+    sendBtn.style.display = 'flex';
+    stopBtn.style.display = 'none';
+    scrollChatToBottom();
+  }
+}
+
+function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
+
+/* ============================================================
+   10. UI WIRING
+   ============================================================ */
+function autoGrowTextarea(){
+  promptInput.style.height = 'auto';
+  promptInput.style.height = Math.min(160, promptInput.scrollHeight) + 'px';
+}
+promptInput.addEventListener('input', autoGrowTextarea);
+promptInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey){
+    e.preventDefault();
+    handleSend();
+  }
+});
+sendBtn.addEventListener('click', handleSend);
+stopBtn.addEventListener('click', () => { abortRequested = true; });
+
+document.querySelectorAll('.suggestion-chip').forEach(chip => {
+  chip.addEventListener('click', () => {
+    promptInput.value = chip.dataset.suggest;
+    autoGrowTextarea();
+    handleSend();
+  });
+});
+
+newChatBtn.addEventListener('click', () => createSession());
+
+sidebarToggleBtn.addEventListener('click', () => {
+  if (window.innerWidth <= 820){
+    appShell.classList.toggle('sidebar-open');
+  } else {
+    appShell.classList.toggle('sidebar-collapsed');
+  }
+});
+
+searchToggle.addEventListener('click', () => {
+  webSearchEnabled = !webSearchEnabled;
+  searchToggle.classList.toggle('on', webSearchEnabled);
+  searchToggle.setAttribute('aria-checked', String(webSearchEnabled));
+  netDot.className = 'status-dot ' + (webSearchEnabled ? 'green' : 'gray');
+  netStatusText.textContent = 'Web search: ' + (webSearchEnabled ? 'on' : 'off');
+});
+searchToggle.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' || e.key === ' '){ e.preventDefault(); searchToggle.click(); }
+});
+
+/* ============================================================
+   11. BOOT
+   ============================================================ */
+initModel(false);
+</script>
+
+</body>
+</html>
